@@ -657,11 +657,10 @@ class RenderDocClient:
             env["AGENTIC_EMBEDDED_PORT_MAX"]   = str(bridge_port)
             env["AGENTIC_EMBEDDED_PKG_PARENT"] = str(src_dir)
             # Prevent qrenderdoc's AlwaysLoad_Extensions auto-load from
-            # binding a competing bridge on the same port. With Windows'
-            # SO_REUSEADDR semantics both bridges would coexist as
-            # listeners and incoming connections would routinely hit the
-            # GuiHandlerContext-backed one instead of ours. The
-            # extension's register() checks this var and no-ops.
+            # starting a GuiHandlerContext-backed bridge inside the
+            # worker process, racing the embedded script for the pinned
+            # port. The extension's register() checks
+            # this var and no-ops.
             env["AGENTIC_DISABLE_AUTOLOAD"]    = "1"
             # One log file per spawn, so a failed spawn reports its own
             # lines and nothing from earlier runs on the same port.
@@ -859,7 +858,14 @@ class RenderDocClient:
             if port in excl:
                 continue
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # The probe must refuse exactly what the worker's listener
+            # will refuse. Winsock's SO_REUSEADDR binds onto a port that
+            # is being listened on, so a held port would read as free;
+            # POSIX SO_REUSEADDR only skips TIME_WAIT.
+            if sys.platform == "win32":
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            else:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 s.bind(("127.0.0.1", port))
             except OSError:
