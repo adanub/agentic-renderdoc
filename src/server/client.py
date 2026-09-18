@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -21,6 +22,7 @@ _WRITE_TIMEOUT      = 5.0
 _WORKER_BIND_WAIT   = 30.0
 _WORKER_GRACE_SECS  = 5.0
 _WORKER_LOG_MAX_AGE = 7 * 24 * 3600.0
+_WORKER_LOG_NAME    = re.compile(r"\d+-\d+-\d+\.log")
 
 
 def worker_log_dir() -> Path:
@@ -28,15 +30,38 @@ def worker_log_dir() -> Path:
     return Path(tempfile.gettempdir()) / "agentic-renderdoc"
 
 
+def new_worker_log_path(bridge_port: int) -> Path:
+    """Name a log file for one spawn, creating its directory.
+
+    The server's pid keeps two servers spawning on one port apart
+    whatever the clock's resolution. Falls back to the temp directory
+    itself when the owned directory cannot be made, so the path the
+    error message reports is always one the worker could write.
+    """
+    name = f"{bridge_port}-{os.getpid()}-{time.time_ns()}.log"
+    directory = worker_log_dir()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        directory = Path(tempfile.gettempdir())
+    return directory / name
+
+
 def sweep_worker_logs() -> None:
     """Delete worker logs older than the retention age. Best-effort.
 
     Run once at server start: nothing else removes these files, and
     the OS temp directory is not reliably cleaned on any platform.
+    Only files named as new_worker_log_path names them are touched,
+    and never through a symlinked directory: the temp directory can be
+    shared between users, and this deletes.
     """
     cutoff = time.time() - _WORKER_LOG_MAX_AGE
     try:
-        candidates = list(worker_log_dir().glob("*.log"))
+        directory = worker_log_dir()
+        if directory.is_symlink():
+            return
+        candidates = [p for p in directory.glob("*.log") if _WORKER_LOG_NAME.fullmatch(p.name)]
     except OSError:
         return
     for path in candidates:
@@ -664,11 +689,7 @@ class RenderDocClient:
             env["AGENTIC_DISABLE_AUTOLOAD"]    = "1"
             # One log file per spawn, so a failed spawn reports its own
             # lines and nothing from earlier runs on the same port.
-            worker_log = worker_log_dir() / f"{bridge_port}-{time.time_ns()}.log"
-            try:
-                worker_log.parent.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                pass
+            worker_log = new_worker_log_path(bridge_port)
             env["AGENTIC_EMBEDDED_LOG"]        = str(worker_log)
 
         popen_kwargs = {

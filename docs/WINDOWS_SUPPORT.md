@@ -134,11 +134,12 @@ The new code paths are intentionally small:
   - `AGENTIC_DISABLE_AUTOLOAD`     — set to `1` so qrenderdoc's
     `AlwaysLoad_Extensions` doesn't trigger the GUI-context bridge to
     start inside the worker process. It races the embedded script for the worker's
-    pinned port, and whichever binds second fails. The extension's `register()`
+    pinned port: the auto-loaded bridge walks the port range, but the
+    embedded script is pinned to one port and exits if it loses. The extension's `register()`
     checks this env var and no-ops.
 
 Diagnostics from the embedded script land in one file per spawn,
-`<temp>/agentic-renderdoc/<port>-<spawn time>.log`. The server names the
+`<temp>/agentic-renderdoc/<port>-<server pid>-<spawn time>.log`. The server names the
 file and passes it as `AGENTIC_EMBEDDED_LOG`, so a failed spawn's error
 carries that run's lines and no other's; the server deletes files older
 than a week each time it starts, because nothing else cleans the OS temp
@@ -177,9 +178,10 @@ the probe refuses exactly the ports the worker's bind would refuse:
   TIME_WAIT, and still a refusal on a port that is being listened on.
 - On Windows `SO_REUSEADDR` means something else — a second socket
   binds onto a port that is being listened on, and connections reach
-  either listener. A GUI qrenderdoc's bridge (a `QTcpServer`) accepts
-  such a bind, so a probe using it reads a GUI-held port as free and
-  the worker is sent onto it. The policy there is
+  either listener, provided the holder set `SO_REUSEADDR` too. A GUI
+  qrenderdoc's bridge is this same threaded listener, so with
+  `SO_REUSEADDR` on both the listener and the probe, a GUI-held port
+  read as free and the worker was sent onto it. The policy there is
   `SO_EXCLUSIVEADDRUSE`, which refuses a held port and cannot be bound
   onto afterwards. A port released by a closed worker rebinds at once
   under it.
