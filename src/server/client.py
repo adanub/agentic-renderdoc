@@ -5,6 +5,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -19,6 +20,32 @@ _CONNECT_TIMEOUT    = 2.0
 _WRITE_TIMEOUT      = 5.0
 _WORKER_BIND_WAIT   = 30.0
 _WORKER_GRACE_SECS  = 5.0
+_WORKER_LOG_MAX_AGE = 7 * 24 * 3600.0
+
+
+def worker_log_dir() -> Path:
+    """Directory holding one diagnostic log per embedded worker spawn."""
+    return Path(tempfile.gettempdir()) / "agentic-renderdoc"
+
+
+def sweep_worker_logs() -> None:
+    """Delete worker logs older than the retention age. Best-effort.
+
+    Run once at server start: nothing else removes these files, and
+    the OS temp directory is not reliably cleaned on any platform.
+    """
+    cutoff = time.time() - _WORKER_LOG_MAX_AGE
+    try:
+        candidates = list(worker_log_dir().glob("*.log"))
+    except OSError:
+        return
+    for path in candidates:
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            continue
+
 
 # Per-command read deadlines. Anything not in this map gets the default.
 # eval and get_texture can drive SetFrameEvent which triggers a full
@@ -636,6 +663,14 @@ class RenderDocClient:
             # GuiHandlerContext-backed one instead of ours. The
             # extension's register() checks this var and no-ops.
             env["AGENTIC_DISABLE_AUTOLOAD"]    = "1"
+            # One log file per spawn, so a failed spawn reports its own
+            # lines and nothing from earlier runs on the same port.
+            worker_log = worker_log_dir() / f"{bridge_port}-{time.time_ns()}.log"
+            try:
+                worker_log.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            env["AGENTIC_EMBEDDED_LOG"]        = str(worker_log)
 
         popen_kwargs = {
             "stdin"  : subprocess.DEVNULL,
@@ -690,23 +725,17 @@ class RenderDocClient:
 
             # Embedded-headless mode (qrenderdoc --script) doesn't write
             # diagnostics to stderr — qrenderdoc is a GUI subprocess. Read
-            # the per-port log file the script writes instead. The path
-            # must match the one embedded_headless.py writes.
+            # the log file this spawn was given instead.
             log_text = ""
             if windows_embedded:
-                base = os.environ.get("TEMP") or os.environ.get("TMP") or "."
-                log_path = os.path.join(
-                    base, f"agentic-renderdoc-embedded-{bridge_port}.log"
-                )
                 try:
-                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                        log_text = f.read().strip()
+                    log_text = worker_log.read_text(encoding="utf-8", errors="replace").strip()
                 except OSError:
                     pass
 
             if windows_embedded:
                 diag  = log_text or err_text or "<empty>"
-                label = "embedded-log"
+                label = f"embedded-log ({worker_log})"
             else:
                 diag  = err_text or "<empty>"
                 label = "stderr"

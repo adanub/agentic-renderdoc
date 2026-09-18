@@ -138,9 +138,12 @@ The new code paths are intentionally small:
     incoming connections routinely hit the GUI bridge instead of ours.
     The extension's `register()` checks this env var and no-ops.
 
-Diagnostics from the embedded script land in
-`%TEMP%/agentic-renderdoc-embedded-<port>.log` (port-suffixed to
-prevent concurrent workers racing on a shared file).
+Diagnostics from the embedded script land in one file per spawn,
+`<temp>/agentic-renderdoc/<port>-<spawn time>.log`. The server names the
+file and passes it as `AGENTIC_EMBEDDED_LOG`, so a failed spawn's error
+carries that run's lines and no other's; the server deletes files older
+than a week each time it starts, because nothing else cleans the OS temp
+directory reliably.
 
 ## Summary of changes specifically for Windows support
 
@@ -157,7 +160,7 @@ prevent concurrent workers racing on a shared file).
 | `src/extension/renderdoc_locate.py` | Syntax-only. |
 | `src/extension/winsock.py` | Single type-comment fix for a 3.6-incompatible annotation in the Windows branch. |
 | `src/extension/embedded_headless.py` | **New.** Thin Windows headless entry point (~130 lines). Imports `EmbeddedHeadlessContext`, `BridgeServer`, and the upstream `HANDLERS` from the package — no logic duplicated. |
-| `src/server/client.py` | Windows branch in `spawn_headless_worker` to launch `qrenderdoc --script embedded_headless.py`. `_find_qrenderdoc()` helper. Bind-failure error message reads `%TEMP%/agentic-renderdoc-embedded-<port>.log` when the embedded path failed (qrenderdoc as GUI doesn't surface stderr). Skips the `renderdoccmd remote-server` port allocation on Windows since the embedded path doesn't use one. |
+| `src/server/client.py` | Windows branch in `spawn_headless_worker` to launch `qrenderdoc --script embedded_headless.py`. `_find_qrenderdoc()` helper. Bind-failure error message reads the spawn's own log file when the embedded path failed (qrenderdoc as GUI doesn't surface stderr). Skips the `renderdoccmd remote-server` port allocation on Windows since the embedded path doesn't use one. |
 
 Linux Python 3.10+ is unaffected — all replaced syntax is valid in
 every Python ≥3.5, and the Windows-specific branches in `client.py`
